@@ -11,6 +11,3 @@ def create_vectorstore(chunks,repo_id:str):
         embedding=embeddings,
         persist_directory=f'chromadb/{repo_id}'
     )
-
-
-    
