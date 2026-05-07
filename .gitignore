@@ -8,6 +8,9 @@
 *.p12
 *.pfx
 secrets/
+.dockerignore
+info.txt
+
 
 # Python
 __pycache__/
@@ -44,3 +47,4 @@ temp/
 Thumbs.db
 .vscode/
 .idea/
+node_modules

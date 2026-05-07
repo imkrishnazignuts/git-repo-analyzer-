@@ -1,0 +1,16 @@
+services:
+  git-repo-analyzer:
+    build:
+      context: .
+    image: git-repo-analyzer:latest
+    container_name: git-repo-analyzer
+    env_file:
+      - .env
+    environment:
+      PORT: 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./repos:/app/repos
+      - ./chromadb:/app/chromadb
+    restart: unless-stopped

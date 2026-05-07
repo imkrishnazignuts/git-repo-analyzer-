@@ -1,59 +1,146 @@
 # Git Repo Analyzer
 
-Git Repo Analyzer is a FastAPI web app that clones a GitHub repository, reads source files, stores code chunks in ChromaDB, and uses an AI model to answer code review questions.
+Git Repo Analyzer is a FastAPI web app that indexes Git repositories or ZIP projects, stores code chunks in ChromaDB, and uses a Groq LLM through LangChain to answer repository questions and run AI-assisted code reviews.
+
+It also includes deterministic syntax checks for selected languages and a browser UI for indexing, asking questions, running full review, and viewing structured findings.
 
 ## Features
 
-- Clone a GitHub repository from a URL
-- Load supported source files from the cloned repo
-- Split code into chunks for retrieval
-- Store embeddings in ChromaDB
-- Ask AI-powered questions about bugs, security issues, runtime errors, performance, and improvements
-- View structured review results in a browser UI
+- Clone and index a public Git repository.
+- Upload and index a ZIP project.
+- Cache cloned repositories and ChromaDB indexes.
+- Force reindex from the UI when you want a fresh clone/vector index.
+- Read supported project files and skip dependency/build/cache folders.
+- Split files into overlapping chunks for retrieval.
+- Store embeddings in persistent ChromaDB folders.
+- Ask focused questions about the indexed codebase.
+- Run full-project AI review with streamed LLM output in the UI.
+- Run deterministic syntax checks for supported languages.
+- Configure the Groq model from `.env` using `LLM_MODEL`.
+- Run locally or with Docker.
 
 ## Tech Stack
 
-- Python
+- Python 3.11
 - FastAPI
+- Uvicorn
 - LangChain
-- ChromaDB
-- Hugging Face embeddings
 - Groq LLM
-- HTML, CSS, and JavaScript
+- ChromaDB
+- Hugging Face sentence-transformer embeddings
+- GitPython
+- HTML, CSS, JavaScript
+- esbuild for JS/TS syntax checking
+- PHP CLI for PHP syntax checking
 
-## Folder Structure
+## Project Structure
 
 ```text
 .
 ├── main.py
+├── delete.py
+├── requirements.txt
+├── package.json
+├── package-lock.json
+├── Dockerfile
+├── docker-compose.yml
+├── DEPLOY_EC2.md
+├── info.txt
 ├── frontend/
 │   ├── index.html
 │   ├── styles.css
 │   └── app.js
-├── services/
-│   ├── chromadb_setup.py
-│   ├── read_repo.py
-│   ├── repo_clone_service.py
-│   ├── review_code.py
-│   └── spiltter.py
-└── .gitignore
+└── services/
+    ├── chromadb_setup.py
+    ├── full_review_code.py
+    ├── read_repo.py
+    ├── repo_clone_service.py
+    ├── review_code.py
+    ├── spiltter.py
+    ├── syntax_check.py
+    └── zip_file_review.py
 ```
 
-## Supported File Types
-
-The analyzer currently reads:
+Runtime data is stored in:
 
 ```text
-.py, .js, .ts, .tsx, .jsx, .java, .go, .php, .html, .css
+repos/
+chromadb/
 ```
 
-It ignores folders such as:
+## Supported Files
+
+Files currently read and indexed for AI review:
 
 ```text
-.git, node_modules, venv, __pycache__, dist, build, .next
+.py, .js, .ts, .tsx, .jsx, .dart, .php, .json, .md
 ```
 
-## Setup
+HTML and CSS are intentionally not indexed.
+
+Ignored folders include:
+
+```text
+.git, node_modules, venv, .venv, __pycache__, dist, build, .next, coverage,
+.pytest_cache, .mypy_cache, .ruff_cache, .idea, .vscode
+```
+
+Files larger than `300_000` bytes are skipped.
+
+## Syntax Checks
+
+The syntax-check endpoint currently scans:
+
+```text
+.py, .js, .jsx, .ts, .tsx, .dart, .php
+```
+
+Current checker behavior:
+
+- Python uses `ast.parse`.
+- JS/JSX/TS/TSX uses `esbuild`.
+- PHP uses `php -l`.
+- Dart is currently listed but has no dedicated checker branch, so it does not report Dart syntax errors yet.
+- Java, Go, HTML, CSS, and JSON checker helpers exist in code but are not active in the current `SUPPORTED_EXTENSIONS` list.
+
+For local PHP syntax checking, PHP must be installed:
+
+```bash
+php -v
+```
+
+On macOS:
+
+```bash
+brew install php
+```
+
+For local JS/TS syntax checking, install Node dependencies:
+
+```bash
+npm ci
+```
+
+## Environment Variables
+
+Create `.env` in the project root:
+
+```env
+GROQ_API_KEY=your_groq_api_key_here
+LLM_MODEL=llama-3.3-70b-versatile
+FULL_REVIEW_WORKERS=2
+# Optional:
+# HF_TOKEN=your_huggingface_token_here
+```
+
+Notes:
+
+- `GROQ_API_KEY` is required.
+- `LLM_MODEL` controls the Groq model used by normal ask mode and full review.
+- `FULL_REVIEW_WORKERS` currently defaults to `2`.
+- Restart the FastAPI server after changing `.env`.
+
+## Local Setup
 
 Create and activate a virtual environment:
 
@@ -62,27 +149,35 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-Install the required packages:
+Install Python dependencies:
 
 ```bash
-pip install fastapi uvicorn python-dotenv gitpython langchain-core langchain-groq langchain-chroma langchain-huggingface langchain-text-splitters sentence-transformers
+pip install -r requirements.txt
 ```
 
-Create a `.env` file in the project root:
+Install Node dependencies for local JS/TS syntax checks:
 
-```text
-GROQ_API_KEY=your_groq_api_key_here
+```bash
+npm ci
 ```
+
+Create `.env`:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your real keys/model settings.
 
 ## Run Locally
 
-Start the FastAPI server:
+Start the app:
 
 ```bash
 uvicorn main:app --reload
 ```
 
-Open the app:
+Open:
 
 ```text
 http://127.0.0.1:8000
@@ -94,42 +189,242 @@ FastAPI docs:
 http://127.0.0.1:8000/docs
 ```
 
+## Cleanup Script
+
+`delete.py` deletes and recreates `repos/` and `chromadb/` every 30 minutes.
+
+Run in a second terminal:
+
+```bash
+python3 delete.py
+```
+
+Run in the background:
+
+```bash
+nohup python3 delete.py > cleanup.log 2>&1 &
+```
+
+Stop it:
+
+```bash
+pkill -f delete.py
+```
+
+Be careful: this removes all cached repositories and vector indexes.
+
+## Docker
+
+Build and run with Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Open:
+
+```text
+http://localhost:8000
+```
+
+The Docker image installs:
+
+- Python dependencies from `requirements.txt`
+- Node dependencies from `package-lock.json`
+- `git`
+- `curl`
+- `nodejs`
+- `npm`
+- `openjdk-17-jdk-headless`
+- `golang-go`
+- `php-cli`
+
+Docker Compose mounts these folders for persistence:
+
+```text
+./repos:/app/repos
+./chromadb:/app/chromadb
+```
+
+For EC2 deployment, see:
+
+```text
+DEPLOY_EC2.md
+```
+
 ## API Endpoints
 
-### Index a Repository
+### Index Git Repository
 
 ```http
 POST /ai/index
 ```
 
-Request body:
+Request:
 
 ```json
 {
-  "repo_link": "https://github.com/user/repo"
+  "repo_link": "https://github.com/user/repo",
+  "force_reindex": false
 }
 ```
 
-### Ask a Review Question
+Response includes:
+
+```json
+{
+  "message": "Repository indexed successfully",
+  "repo_id": "generated_repo_id",
+  "cached": false,
+  "files_loaded": 10,
+  "chunks_created": 25
+}
+```
+
+### Index ZIP Project
+
+```http
+POST /ai/index-zip
+```
+
+Request:
+
+- Multipart form upload
+- Field name: `file`
+- File type: `.zip`
+
+### Ask Repository Question
 
 ```http
 POST /ai/ask
 ```
 
-Request body:
+Request:
 
 ```json
 {
   "repo_id": "generated_repo_id",
-  "question": "Find bugs and security issues in this repository."
+  "question": "Where is authentication implemented?"
 }
 ```
 
-## Important Notes
+This uses Chroma retrieval with `k=5`, builds context from matching chunks, and returns structured JSON.
 
-- Do not upload `.env` to GitHub.
-- Do not upload `venv/`, `repos/`, `chromadb/`, or `__pycache__/`.
-- Local repository clones are saved inside `repos/`.
-- ChromaDB vector data is saved inside `chromadb/`.
-- If an API key was ever exposed publicly, rotate it before deploying or sharing the project.
+### Full Project Review
+
+```http
+POST /ai/full-review
+```
+
+Request:
+
+```json
+{
+  "repo_id": "generated_repo_id",
+  "question": "Review this project for bugs, syntax errors, security issues, runtime errors, and bad practices.",
+  "max_workers": 2
+}
+```
+
+Response:
+
+- Streaming response
+- Media type: `application/x-ndjson`
+- The frontend reads streamed events and renders live LLM output token by token.
+
+Important detail:
+
+Full review sends only the first `12_000` characters of each file to the LLM:
+
+```python
+doc.page_content[:12000]
+```
+
+### Syntax Check
+
+```http
+POST /ai/syntax-check
+```
+
+Request:
+
+```json
+{
+  "repo_id": "generated_repo_id"
+}
+```
+
+Response includes:
+
+```json
+{
+  "summary": "Syntax check completed...",
+  "repo_id": "generated_repo_id",
+  "checked_files": 10,
+  "skipped_files": 3,
+  "issues": []
+}
+```
+
+## Core Backend Flow
+
+Indexing flow:
+
+1. User submits a Git URL or ZIP file.
+2. Backend clones/extracts into `repos/{repo_id}`.
+3. `read_repo.py` loads supported files.
+4. `spiltter.py` splits documents into chunks.
+5. `chromadb_setup.py` embeds and stores chunks.
+6. Metadata is saved in `chromadb/{repo_id}/index_metadata.json`.
+
+Ask flow:
+
+1. User asks a question.
+2. Chroma retrieves relevant chunks.
+3. Prompt sends context and question to Groq.
+4. JSON response is rendered in the UI.
+
+Full-review streaming flow:
+
+1. User starts full review.
+2. Frontend calls `/ai/full-review`.
+3. Backend streams LLM output per file using `chain.stream(...)`.
+4. Frontend displays live generated tokens in a card.
+5. Completed file output is parsed into structured issues.
+6. Syntax checks run after LLM streaming.
+7. Final summary is displayed.
+
+## Useful Commands
+
+Check Python files:
+
+```bash
+python3 -m py_compile main.py services/*.py delete.py
+```
+
+Check frontend JavaScript:
+
+```bash
+node --check frontend/app.js
+```
+
+View Docker logs:
+
+```bash
+docker logs -f git-repo-analyzer
+```
+
+Rebuild Docker image:
+
+```bash
+docker compose up --build
+```
+
+## Security Notes
+
+- Never commit `.env`.
+- Rotate any API key that was exposed publicly.
+- Public deployments should be protected with HTTPS and access control.
+- The app clones repositories and extracts ZIP files, so run it in an isolated environment.
+- Keep `repos/` and `chromadb/` out of Git.
 

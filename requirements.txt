@@ -10,3 +10,4 @@ langchain-huggingface
 langchain-text-splitters
 chromadb
 sentence-transformers
+python-multipart
