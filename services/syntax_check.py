@@ -5,7 +5,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 from pydantic import BaseModel
-from fastapi import HTTPException,APIRouter
+from fastapi import HTTPException, APIRouter
+from .chromadb_setup import get_repo_source_path
 import re
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
@@ -19,11 +20,24 @@ router = APIRouter(
 
 IGNORE_DIRS = {
     ".git", "node_modules", "venv", ".venv", "__pycache__",
-    "dist", "build", ".next", "coverage","__MACOSX"
+    "dist", "build", ".next", "coverage", "__MACOSX",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".idea", ".vscode",
+    "vendor", "storage", "bootstrap/cache", "public/build", "public/vendor",
+    ".nuxt", ".output", ".angular", ".turbo", ".cache", "target"
 }
 
 SUPPORTED_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx",".dart", ".php"
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".php", ".json", ".html", ".htm", ".css"
+}
+
+IGNORE_FILES = {
+    ".DS_Store", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "composer.lock", "poetry.lock", "Pipfile.lock", "npm-shrinkwrap.json"
+}
+
+GENERATED_FILE_PATTERNS = {
+    ".min.js", ".min.css", ".bundle.js", ".bundle.css", ".map",
+    ".d.ts"
 }
 
 LANGUAGE_BY_EXTENSION = {
@@ -32,7 +46,12 @@ LANGUAGE_BY_EXTENSION = {
     ".jsx": "jsx",
     ".ts": "typescript",
     ".tsx": "tsx",
-    ".php": "php"
+    ".vue": "vue",
+    ".php": "php",
+    ".json": "json",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css"
 }
 
 
@@ -109,6 +128,22 @@ def command_path(command_name: str):
         return str(local_command)
 
     return shutil.which(command_name) or command_name
+
+
+def should_ignore_file(file_path: Path):
+    if file_path.name in IGNORE_FILES:
+        return True
+
+    if any(file_path.name.endswith(pattern) for pattern in GENERATED_FILE_PATTERNS):
+        return True
+
+    path_text = file_path.as_posix()
+    normalized_parts = set(file_path.parts)
+
+    return any(
+        ignore_dir in normalized_parts or f"/{ignore_dir}/" in f"/{path_text}/"
+        for ignore_dir in IGNORE_DIRS
+    )
 
 
 def run_command(command, cwd=None, timeout=30):
@@ -206,6 +241,99 @@ def check_esbuild(file_path: Path, repo_path: Path):
         return [make_issue(file_path, repo_path, language, parse_esbuild_problem(error), line, f"{loader}-syntax")]
 
     return []
+
+
+def check_vue(file_path: Path, repo_path: Path):
+    validator_script = r"""
+const fs = require("fs");
+const { parse, compileScript, compileTemplate } = require("@vue/compiler-sfc");
+
+const filename = process.argv[1];
+const source = fs.readFileSync(filename, "utf8");
+const issues = [];
+
+function lineFromError(error) {
+  return error && error.loc && error.loc.start ? error.loc.start.line : null;
+}
+
+function messageFromError(error) {
+  if (!error) return "Unknown Vue syntax error";
+  return error.message || String(error);
+}
+
+function addIssue(error, rule) {
+  issues.push({
+    message: messageFromError(error),
+    line: lineFromError(error),
+    rule,
+  });
+}
+
+try {
+  const parsed = parse(source, { filename });
+
+  for (const error of parsed.errors || []) {
+    addIssue(error, "vue-sfc-parse");
+  }
+
+  if (!issues.length && (parsed.descriptor.script || parsed.descriptor.scriptSetup)) {
+    try {
+      compileScript(parsed.descriptor, { id: "syntax-check" });
+    } catch (error) {
+      addIssue(error, "vue-script-syntax");
+    }
+  }
+
+  if (!issues.length && parsed.descriptor.template) {
+    const result = compileTemplate({
+      source: parsed.descriptor.template.content,
+      filename,
+      id: "syntax-check",
+    });
+
+    for (const error of result.errors || []) {
+      addIssue(error, "vue-template-syntax");
+    }
+  }
+} catch (error) {
+  addIssue(error, "vue-syntax-check-failed");
+}
+
+process.stdout.write(JSON.stringify(issues));
+"""
+
+    try:
+        result = subprocess.run(
+            ["node", "-e", validator_script, str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+    except FileNotFoundError:
+        return [make_issue(file_path, repo_path, "vue", "Checker not installed: node", None, "vue-syntax-check-failed")]
+    except subprocess.TimeoutExpired:
+        return [make_issue(file_path, repo_path, "vue", "Vue syntax checker timed out", None, "vue-syntax-check-failed")]
+
+    if result.returncode != 0:
+        error_text = result.stderr.strip() or result.stdout.strip()
+        return [make_issue(file_path, repo_path, "vue", error_text, parse_first_line_number(error_text), "vue-syntax-check-failed")]
+
+    try:
+        vue_issues = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return [make_issue(file_path, repo_path, "vue", result.stdout, parse_first_line_number(result.stdout), "vue-syntax-check-failed")]
+
+    return [
+        make_issue(
+            file_path,
+            repo_path,
+            "vue",
+            issue.get("message", ""),
+            issue.get("line"),
+            issue.get("rule") or "vue-syntax"
+        )
+        for issue in vue_issues
+    ]
 
 
 def check_java(file_path: Path, repo_path: Path):
@@ -323,6 +451,9 @@ def check_single_file(file_path: Path, repo_path: Path):
     if suffix in [".js", ".jsx", ".ts", ".tsx"]:
         return check_esbuild(file_path, repo_path)
 
+    if suffix == ".vue":
+        return check_vue(file_path, repo_path)
+
     if suffix == ".java":
         return check_java(file_path, repo_path)
 
@@ -334,6 +465,12 @@ def check_single_file(file_path: Path, repo_path: Path):
 
     if suffix == ".json":
         return check_json(file_path, repo_path)
+
+    if suffix in [".html", ".htm"]:
+        return check_html(file_path, repo_path)
+
+    if suffix == ".css":
+        return check_css(file_path, repo_path)
 
     return []
 
@@ -347,7 +484,7 @@ def check_project_syntax(repo_path: Path):
         if not file_path.is_file():
             continue
 
-        if any(part in IGNORE_DIRS for part in file_path.parts):
+        if should_ignore_file(file_path):
             skipped_files += 1
             continue
 
@@ -378,7 +515,7 @@ def check_project_syntax(repo_path: Path):
 
 @router.post("/syntax-check")
 def syntax_check_project(request: SyntaxCheckRequest):
-    repo_path = Path("repos") / request.repo_id
+    repo_path = get_repo_source_path(request.repo_id)
 
     if not repo_path.exists():
         raise HTTPException(status_code=404, detail="Repository not found")

@@ -37,16 +37,28 @@ def get_index_metadata(repo_id: str):
         return None
 
 
-def save_index_metadata(repo_id: str, files_loaded: int, chunks_created: int):
+def save_index_metadata(repo_id: str, files_loaded: int, chunks_created: int, source_path: str | None = None):
     metadata_path = index_metadata_path(repo_id)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata_path.write_text(
-        json.dumps({
-            "files_loaded": files_loaded,
-            "chunks_created": chunks_created
-        }),
-        encoding="utf-8"
-    )
+    metadata = {
+        "files_loaded": files_loaded,
+        "chunks_created": chunks_created
+    }
+
+    if source_path:
+        metadata["source_path"] = source_path
+
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def get_repo_source_path(repo_id: str):
+    metadata = get_index_metadata(repo_id) or {}
+    source_path = metadata.get("source_path")
+
+    if source_path:
+        return Path(source_path)
+
+    return Path("repos") / repo_id
 
 
 def create_vectorstore(chunks,repo_id:str):

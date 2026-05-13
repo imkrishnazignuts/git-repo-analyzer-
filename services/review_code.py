@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from .repo_clone_service import clone_repo
 from .spiltter import split_document
 from .chromadb_setup import create_vectorstore, get_index_metadata, save_index_metadata, vectorstore_exists
-from .read_repo import load_documents
+from . import read_repo
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -92,7 +92,7 @@ Return response in this exact format:
 
 llm = ChatGroq(
     model=LLM_MODEL,
-    temperature=0.2
+    temperature=0
 )
 
 
@@ -147,18 +147,19 @@ def index_repo(request : requestRepo):
             "chunks_created": metadata.get("chunks_created", 0)
         }
 
-    documents = load_documents(repo["path"])
+    documents = read_repo.load_documents(repo["path"])
     chunks = split_document(documents)
 
     create_vectorstore(chunks,repo["repo_id"])
-    save_index_metadata(repo["repo_id"], len(documents), len(chunks))
+    save_index_metadata(repo["repo_id"], len(documents), len(chunks), str(repo["path"]))
 
     return {
         "message": "Repository indexed successfully",
         "repo_id": repo["repo_id"],
         "cached": repo.get("cached", False),
         "files_loaded": len(documents),
-        "chunks_created": len(chunks)
+        "chunks_created": len(chunks),
+        "file_filter": dict(read_repo.LAST_LOAD_STATS)
     }
 
 @router.post('/ask')

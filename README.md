@@ -337,7 +337,7 @@ Important detail:
 Full review sends only the first `12_000` characters of each file to the LLM:
 
 ```python
-doc.page_content[:12000]
+doc.page_content
 ```
 
 ### Syntax Check

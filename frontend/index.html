@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=vue-logo-1" />
   </head>
   <body>
     <header class="app-header">
@@ -178,6 +178,7 @@
             </div>
           </form>
         </div>
+        <div class="panel zip-projects" id="zipProjects" hidden></div>
       </section>
 
       <section class="page" id="page-review" data-page="review">
@@ -229,15 +230,13 @@
             </svg>
             <span>PHP</span>
           </div>
-          <div class="language-logo dart">
-            <svg viewBox="0 0 256 256" role="img" aria-label="Dart">
-              <path fill="#0175C2" d="M48 170 18 140c-11-11-11-29 0-40l82-82c11-11 29-11 40 0l30 30z" />
-              <path fill="#40C4FF" d="M48 170h91l74-74-43-48z" />
-              <path fill="#29B6F6" d="M92 214 48 170h91l74 74h-88c-12 0-24-5-33-13z" />
-              <path fill="#01579B" d="M213 96v118c0 17-13 30-30 30h-44z" />
-              <path fill="#FFFFFF" opacity=".32" d="M48 170 170 48l18 18L66 188z" />
+          <div class="language-logo vue">
+            <svg viewBox="0 0 256 222" role="img" aria-label="Vue.js">
+              <path fill="#41B883" d="M204.8 0H256L128 221.7 0 0h97.9L128 52.4 158.2 0z" />
+              <path fill="#35495E" d="M158.2 0 128 52.4 97.9 0H48.6L128 137.5 207.4 0z" />
+              <path fill="#FFFFFF" opacity=".18" d="M48.6 0 128 137.5 207.4 0h-20.7L128 101.7 69.3 0z" />
             </svg>
-            <span>Dart</span>
+            <span>Vue.js</span>
           </div>
           <div class="language-logo java">
             <svg viewBox="0 0 256 256" role="img" aria-label="Java">
@@ -253,9 +252,20 @@
         </div>
         <form class="panel review-panel" id="fullReviewForm">
           <label for="fullQuestion">Review instruction</label>
-          <textarea id="fullQuestion" name="fullQuestion" rows="5" required>Review this project for bugs, syntax errors, security issues, runtime errors, and bad practices.</textarea>
+          <textarea id="fullQuestion" name="fullQuestion" rows="5" required>Review this project for confirmed major bugs, security vulnerabilities, runtime errors, syntax errors, and bad practices. Do not include speculative or minor issues.</textarea>
           <button type="submit" id="fullReviewButton">Run full review</button>
         </form>
+        <div class="inline-results" id="fullReviewInlineResults" hidden>
+          <div class="results-header">
+            <div>
+              <p class="eyebrow">Full review output</p>
+              <h2>Review Results</h2>
+            </div>
+          </div>
+          <div class="summary" data-inline-summary hidden></div>
+          <div class="issues" data-inline-issues></div>
+          <div class="improvements" data-inline-improvements hidden></div>
+        </div>
       </section>
 
       <section class="page" id="page-syntax" data-page="syntax">
@@ -453,6 +463,6 @@
     </section>
 
     <div class="toast-stack" id="toastStack" role="status" aria-live="polite"></div>
-    <script src="/app.js?v=stream-full-review-2"></script>
+    <script src="/app.js?v=vue-logo-1"></script>
   </body>
 </html>

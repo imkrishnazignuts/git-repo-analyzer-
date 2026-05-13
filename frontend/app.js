@@ -31,6 +31,7 @@ const elements = {
   indexButton: document.querySelector("#indexButton"),
   zipButton: document.querySelector("#zipButton"),
   fullReviewButton: document.querySelector("#fullReviewButton"),
+  fullReviewInlineResults: document.querySelector("#fullReviewInlineResults"),
   syntaxButton: document.querySelector("#syntaxButton"),
   askButton: document.querySelector("#askButton"),
   askLauncher: document.querySelector("#askLauncher"),
@@ -42,6 +43,7 @@ const elements = {
   chatMessages: document.querySelector("#chatMessages"),
   indexMeta: document.querySelector("#indexMeta"),
   zipMeta: document.querySelector("#zipMeta"),
+  zipProjects: document.querySelector("#zipProjects"),
   loaderPanel: document.querySelector("#loaderPanel"),
   loaderStage: document.querySelector("#loaderStage"),
   loaderTitle: document.querySelector("#loaderTitle"),
@@ -76,7 +78,7 @@ function setActiveRepo(repoId) {
   elements.statusDot.classList.remove("ready");
 }
 
-function showPage(route) {
+function showPage(route, updateHash = true) {
   const nextRoute = document.querySelector(`[data-page="${route}"]`) ? route : "dashboard";
 
   elements.pages.forEach((page) => {
@@ -87,7 +89,7 @@ function showPage(route) {
     tab.classList.toggle("active", tab.dataset.route === nextRoute);
   });
 
-  if (window.location.hash !== `#${nextRoute}`) {
+  if (updateHash && window.location.hash !== `#${nextRoute}`) {
     history.replaceState(null, "", `#${nextRoute}`);
   }
 }
@@ -166,7 +168,7 @@ function hideLoader() {
 }
 
 function showResultsPage() {
-  showPage("results");
+  showPage("results", false);
 }
 
 async function postJson(url, payload) {
@@ -215,11 +217,146 @@ function escapeHtml(value = "") {
     .replaceAll("'", "&#039;");
 }
 
+function skippedFileCount(fileFilter = {}) {
+  return (fileFilter.ignored || 0)
+    + (fileFilter.style_skipped || 0)
+    + (fileFilter.unsupported || 0)
+    + (fileFilter.too_large || 0);
+}
+
+function renderZipIndexResult(result, options = {}) {
+  setActiveRepo(result.repo_id);
+
+  if (!options.keepProjectChoices) {
+    elements.zipProjects.hidden = true;
+    elements.zipProjects.innerHTML = "";
+  }
+
+  elements.zipMeta.innerHTML = `
+    <span>Files: ${escapeHtml(result.files_loaded ?? "--")}</span>
+    <span>Chunks: ${escapeHtml(result.chunks_created ?? "--")}</span>
+    <span>${result.cached ? "Cached" : "Fresh"}</span>
+    ${result.project ? `<span>Project: ${escapeHtml(result.project.name || result.project.path || "Root")}</span>` : ""}
+    ${result.file_filter ? `<span>Skipped: ${escapeHtml(skippedFileCount(result.file_filter))}</span>` : ""}
+  `;
+}
+
+function renderZipProjectChoices(result) {
+  const projects = Array.isArray(result.projects) ? result.projects : [];
+  setActiveRepo("");
+  elements.zipMeta.innerHTML = `
+    <span>${escapeHtml(projects.length)} projects detected</span>
+    <span>Select one below</span>
+  `;
+  elements.zipProjects.hidden = false;
+  elements.zipProjects.innerHTML = `
+    <div class="zip-projects-header">
+      <div>
+        <strong>Select Repository From ZIP</strong>
+        <span>Multiple repositories were detected. Index one project, run review, then return here and index the next one if needed.</span>
+      </div>
+      <span class="zip-project-count">${escapeHtml(projects.length)} detected</span>
+    </div>
+    <div class="zip-project-list">
+      ${projects.map((project, index) => `
+        <article class="zip-project-card">
+          <div>
+            <strong>${escapeHtml(project.name || `Project ${index + 1}`)}</strong>
+            <span>${escapeHtml(project.path || "ZIP root")}</span>
+          </div>
+          <p>${escapeHtml((project.markers || []).join(", ") || "No framework marker found")}</p>
+          <button type="button" data-zip-project="${escapeHtml(project.path)}">Index and use for review</button>
+        </article>
+      `).join("")}
+    </div>
+  `;
+
+  elements.zipProjects.querySelectorAll("[data-zip-project]").forEach((button) => {
+    button.addEventListener("click", () => {
+      indexSelectedZipProject(result.zip_id, button.dataset.zipProject, button);
+    });
+  });
+}
+
+async function indexSelectedZipProject(zipId, projectPath, button) {
+  const idleText = "Index and use for review";
+  setButtonLoading(button, true, idleText, "Indexing");
+  startLoader("zip", "Indexing selected ZIP project", "Reading, chunking, and vectorizing only the selected project.");
+
+  try {
+    const result = await postJson("/ai/index-zip-project", {
+      zip_id: zipId,
+      project_path: projectPath,
+    });
+    renderZipIndexResult(result, { keepProjectChoices: true });
+    elements.zipProjects.querySelectorAll("[data-zip-project]").forEach((projectButton) => {
+      projectButton.classList.remove("secondary");
+      projectButton.textContent = projectButton.dataset.indexed ? "Indexed" : idleText;
+    });
+    button.textContent = "Active for review";
+    button.classList.add("secondary");
+    button.dataset.indexed = "true";
+    showToast("ZIP project ready", "This project is now active for full review.", "success");
+    stopLoader("ZIP project ready");
+  } catch (error) {
+    showToast("ZIP project failed", error.message, "error");
+    stopLoader("ZIP project failed");
+  } finally {
+    setButtonLoading(button, false, button.dataset.indexed ? "Active for review" : idleText, "Indexing");
+  }
+}
+
 function severityClass(severity = "") {
   const normalized = severity.toLowerCase();
   if (normalized.includes("high")) return "severity-high";
   if (normalized.includes("medium")) return "severity-medium";
   return "severity-low";
+}
+
+function iconSvg(name) {
+  const icons = {
+    alert: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.3 3.9 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" /></svg>',
+    shield: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-5" /></svg>',
+    target: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="3" /><path d="M12 2v3" /><path d="M12 19v3" /><path d="M2 12h3" /><path d="M19 12h3" /></svg>',
+    bug: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2l2 3" /><path d="M16 2l-2 3" /><rect x="7" y="5" width="10" height="14" rx="5" /><path d="M4 13h3" /><path d="M17 13h3" /><path d="M5 20l3-3" /><path d="M19 20l-3-3" /><path d="M12 9v6" /></svg>',
+    code: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18-6-6 6-6" /><path d="m15 6 6 6-6 6" /></svg>',
+    module: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4z" /><path d="M14 4h6v6h-6z" /><path d="M4 14h6v6H4z" /><path d="M14 14h6v6h-6z" /></svg>',
+    file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>',
+    lightbulb: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18h6" /><path d="M10 22h4" /><path d="M8.5 14a6 6 0 1 1 7 0c-.8.5-1.5 1.5-1.5 2.5h-4c0-1-.7-2-1.5-2.5z" /></svg>',
+    search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>',
+  };
+
+  return icons[name] || icons.code;
+}
+
+function createIconBadge(icon, label, className = "") {
+  return `<span class="icon-badge ${className}">${iconSvg(icon)}<span>${escapeHtml(label)}</span></span>`;
+}
+
+function createDetailRow(icon, label, value) {
+  if (!value) return "";
+
+  return `
+    <div class="issue-detail-row">
+      <span class="detail-icon">${iconSvg(icon)}</span>
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <p>${escapeHtml(value)}</p>
+      </div>
+    </div>
+  `;
+}
+
+function reportSectionIcon(title) {
+  const normalized = title.toLowerCase();
+
+  if (normalized.includes("tech stack")) return "code";
+  if (normalized.includes("developed modules")) return "module";
+  if (normalized.includes("major problems")) return "alert";
+  if (normalized.includes("each file")) return "file";
+  if (normalized.includes("severity")) return "shield";
+
+  return "target";
 }
 
 function resetResults() {
@@ -251,112 +388,328 @@ function updateIssueStats(issues) {
 function createIssueCard(issue) {
   const code = issue.improved_code?.code || issue.code;
   const language = issue.improved_code?.language || issue.language || "code";
+  const severity = issue.severity || "low";
+  const confidence = issue.confidence || "medium";
+  const issueType = issue.issue_type || issue.rule || "finding";
+  const vulnerabilityLabel = issue.vulnerability ? "vulnerability" : "no vulnerability";
   const node = document.createElement("article");
   node.className = "issue";
   node.innerHTML = `
     <div class="issue-top">
-      <h4>${escapeHtml(issue.file_path || "Unknown file")}</h4>
-      <span class="badge ${severityClass(issue.severity)}">${escapeHtml(issue.severity || "low")}</span>
+      <div class="issue-title">
+        <span class="detail-icon">${iconSvg("file")}</span>
+        <h4>${escapeHtml(issue.file_path || "Unknown file")}</h4>
+      </div>
+      ${createIconBadge("alert", severity, severityClass(severity))}
     </div>
-    <div class="issue-meta">
-      <span class="badge">${escapeHtml(issue.issue_type || issue.rule || "finding")}</span>
-      ${language ? `<span class="badge">${escapeHtml(language)}</span>` : ""}
+    <div class="issue-chip-grid">
+      ${createIconBadge("bug", issueType)}
+      ${language ? createIconBadge("code", language) : ""}
+      ${issue.module ? createIconBadge("module", issue.module) : ""}
+      ${createIconBadge("target", `${confidence} confidence`)}
+      ${createIconBadge("shield", vulnerabilityLabel, issue.vulnerability ? "severity-high" : "severity-low")}
     </div>
-    <p><strong>Problem:</strong> ${escapeHtml(issue.problem || "")}</p>
-    ${issue.why_it_is_problem ? `<p><strong>Why:</strong> ${escapeHtml(issue.why_it_is_problem)}</p>` : ""}
-    ${issue.suggestion ? `<p><strong>Suggestion:</strong> ${escapeHtml(issue.suggestion)}</p>` : ""}
+    <div class="issue-detail-grid">
+      ${createDetailRow("bug", "Problem", issue.problem || "")}
+      ${createDetailRow("search", "Evidence", issue.evidence || "")}
+      ${createDetailRow("alert", "Impact", issue.why_it_is_problem || "")}
+      ${createDetailRow("lightbulb", "Suggestion", issue.suggestion || "")}
+    </div>
     ${code ? `<pre class="code-block"><code>${escapeHtml(code)}</code></pre>` : ""}
   `;
   return node;
 }
 
-function prepareFullReviewStream() {
-  hideLoader();
-  resetResults();
-  showResultsPage();
-  state.fullReviewIssues = [];
-  state.fullReviewCards = new Map();
-  updateIssueStats(state.fullReviewIssues);
-  elements.summary.hidden = false;
-  elements.summary.textContent = "Starting full review...";
-}
-
-function appendFullReviewIssue(issue) {
-  state.fullReviewIssues.push(issue);
-  updateIssueStats(state.fullReviewIssues);
-  elements.issues.appendChild(createIssueCard(issue));
-}
-
-function createLiveReviewCard(filePath, language = "") {
+function createReportSection(title, bodyHtml) {
   const node = document.createElement("article");
-  node.className = "issue live-review";
+  node.className = "issue report-section";
   node.innerHTML = `
-    <div class="issue-top">
-      <h4>${escapeHtml(filePath || "Reviewing file")}</h4>
-      <span class="badge severity-medium">streaming</span>
+    <div class="report-section-header">
+      <span class="report-section-icon">${iconSvg(reportSectionIcon(title))}</span>
+      <div>
+        <h4>${escapeHtml(title)}</h4>
+        <span>Review section</span>
+      </div>
     </div>
-    <div class="issue-meta">
-      <span class="badge">LLM output</span>
-      ${language ? `<span class="badge">${escapeHtml(language)}</span>` : ""}
-    </div>
-    <pre class="code-block"><code></code></pre>
+    ${bodyHtml}
   `;
-  elements.issues.appendChild(node);
-  state.fullReviewCards.set(filePath, node);
   return node;
 }
 
-function appendLiveReviewToken(filePath, token) {
-  const node = state.fullReviewCards.get(filePath) || createLiveReviewCard(filePath);
-  const output = node.querySelector("code");
-  output.textContent += token;
-  output.parentElement.scrollTop = output.parentElement.scrollHeight;
+function renderMetricCards(items, valueKey = "files", labelKey = "name") {
+  return `
+    <div class="report-metric-grid">
+      ${items.map((item) => `
+        <div class="report-metric">
+          <strong>${escapeHtml(item[valueKey] ?? 0)}</strong>
+          <span>${escapeHtml(item[labelKey] || "item")}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
 }
 
-function finishLiveReviewCard(filePath, issueCount = 0) {
-  const node = state.fullReviewCards.get(filePath);
-
-  if (!node) return;
-
-  state.fullReviewCards.delete(filePath);
-
-  if (issueCount > 0) {
-    node.remove();
+function renderTechStackSection(techStack, target = elements.issues) {
+  if (!techStack || (!Array.isArray(techStack.languages) && !Array.isArray(techStack.frameworks_libraries))) {
     return;
   }
 
-  node.querySelector(".badge").textContent = "no issues";
-  const output = node.querySelector("code");
-  output.textContent = "No structured findings returned for this file.";
+  const languages = Array.isArray(techStack.languages) ? techStack.languages : [];
+  const configs = Array.isArray(techStack.configs) ? techStack.configs : [];
+  const frameworks = Array.isArray(techStack.frameworks_libraries) ? techStack.frameworks_libraries : [];
+  const languageTotal = languages.reduce((sum, item) => sum + Number(item.files || 0), 0);
+  const configTotal = configs.reduce((sum, item) => sum + Number(item.files || 0), 0);
+  const body = `
+    <div class="report-overview">
+      <div>
+        <span>Primary stack</span>
+        <strong>${escapeHtml(techStack.summary || "Not detected")}</strong>
+      </div>
+      <div>
+        <span>Source files</span>
+        <strong>${escapeHtml(languageTotal)}</strong>
+      </div>
+      <div>
+        <span>Config files</span>
+        <strong>${escapeHtml(configTotal)}</strong>
+      </div>
+    </div>
+    ${languages.length ? renderMetricCards(languages) : ""}
+    ${frameworks.length ? `
+      <div class="report-subsection">
+        <h5>Frameworks and libraries</h5>
+        <div class="report-chip-row">${frameworks.map((item) => createIconBadge("code", item)).join("")}</div>
+      </div>
+    ` : ""}
+    ${configs.length ? `
+      <div class="report-subsection">
+        <h5>Configuration footprint</h5>
+        <div class="report-chip-row">${configs.map((item) => createIconBadge("file", `${item.name}: ${item.files}`)).join("")}</div>
+      </div>
+    ` : ""}
+  `;
+  target.appendChild(createReportSection("Tech Stack", body));
 }
 
-function renderReviewResults(result) {
-  resetResults();
-  showResultsPage();
-  elements.summary.hidden = !result.summary;
-  elements.summary.textContent = result.summary || "";
+function renderModuleProblemsSection(moduleProblems, target = elements.issues) {
+  if (!Array.isArray(moduleProblems) || !moduleProblems.length) return;
 
+  const body = `
+    <div class="report-card-list">
+      ${moduleProblems.map((item) => `
+        <article class="report-card">
+          <div class="report-card-header">
+            <strong>${escapeHtml(item.module)}</strong>
+            <span>${escapeHtml(item.issue_count || 0)} issue(s)</span>
+          </div>
+          <p>${escapeHtml(item.major_problem || "")}</p>
+          <div class="report-chip-row">
+            ${createIconBadge("alert", `High ${item.high || 0}`, Number(item.high || 0) ? "severity-high" : "")}
+            ${createIconBadge("target", `Medium ${item.medium || 0}`, Number(item.medium || 0) ? "severity-medium" : "")}
+            ${createIconBadge("file", `${Array.isArray(item.files) ? item.files.length : 0} file(s)`)}
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+  target.appendChild(createReportSection("Module By Module Major Problems", body));
+}
+
+function renderDevelopedModulesSection(modules, target = elements.issues) {
+  if (!Array.isArray(modules) || !modules.length) return;
+
+  const body = `
+    <div class="report-card-list">
+      ${modules.map((item) => `
+        <article class="report-card">
+          <div class="report-card-header">
+            <strong>${escapeHtml(item.name)}</strong>
+            <span>${escapeHtml(item.file_count || 0)} file(s)</span>
+          </div>
+          <div class="report-chip-row">
+            ${(Array.isArray(item.languages) ? item.languages : []).map((language) => createIconBadge("code", language)).join("")}
+          </div>
+          ${Array.isArray(item.sample_files) && item.sample_files.length ? `
+            <div class="report-file-list">
+              ${item.sample_files.map((file) => `<span>${escapeHtml(file)}</span>`).join("")}
+            </div>
+          ` : ""}
+        </article>
+      `).join("")}
+    </div>
+  `;
+  target.appendChild(createReportSection("Developed Modules", body));
+}
+
+function renderSeverityVulnerabilitySection(summary, target = elements.issues) {
+  if (!summary || typeof summary !== "object") return;
+
+  const body = `
+    <div class="issue-meta">
+      <span class="badge severity-high">High: ${escapeHtml(summary.high || 0)}</span>
+      <span class="badge severity-medium">Medium: ${escapeHtml(summary.medium || 0)}</span>
+      <span class="badge severity-low">Low: ${escapeHtml(summary.low || 0)}</span>
+      <span class="badge">Vulnerabilities: ${escapeHtml(summary.vulnerabilities || 0)}</span>
+    </div>
+    ${summary.review_standard ? `<p>${escapeHtml(summary.review_standard)}</p>` : ""}
+  `;
+  target.appendChild(createReportSection("Severity And Vulnerability", body));
+}
+
+function renderReviewReportContent(result, targetIssues) {
   const issues = Array.isArray(result.issues) ? result.issues : [];
-  updateIssueStats(issues);
+  const hasSections = Boolean(result.tech_stack)
+    || (Array.isArray(result.developed_modules) && result.developed_modules.length)
+    || (Array.isArray(result.module_problems) && result.module_problems.length)
+    || Boolean(result.severity_vulnerability);
 
-  if (!issues.length) {
-    elements.issues.innerHTML = '<div class="empty-state"><strong>No issues returned</strong><span>The analysis did not report structured findings.</span></div>';
+  renderTechStackSection(result.tech_stack, targetIssues);
+  renderDevelopedModulesSection(result.developed_modules, targetIssues);
+  renderModuleProblemsSection(result.module_problems, targetIssues);
+
+  if (issues.length) {
+    targetIssues.appendChild(createReportSection("Each File Defects And Suggestions", ""));
+  }
+
+  if (!issues.length && !hasSections) {
+    targetIssues.innerHTML = '<div class="empty-state"><strong>No issues returned</strong><span>The analysis did not report structured findings.</span></div>';
   }
 
   issues.forEach((issue) => {
-    elements.issues.appendChild(createIssueCard(issue));
+    targetIssues.appendChild(createIssueCard(issue));
   });
 
-  const improvements = Array.isArray(result.overall_improvements) ? result.overall_improvements : [];
-  elements.improvements.hidden = !improvements.length;
-  elements.improvements.innerHTML = improvements.length
-    ? `<strong>Overall improvements</strong><ul>${improvements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+  renderSeverityVulnerabilitySection(result.severity_vulnerability, targetIssues);
+}
+
+function renderFullReviewInline(result) {
+  const panel = elements.fullReviewInlineResults;
+
+  if (!panel) {
+    renderReviewResults(result);
+    return;
+  }
+
+  const summary = panel.querySelector("[data-inline-summary]");
+  const issues = panel.querySelector("[data-inline-issues]");
+  const improvements = panel.querySelector("[data-inline-improvements]");
+
+  panel.hidden = false;
+  summary.hidden = !result.summary;
+  summary.textContent = result.summary || "";
+  issues.innerHTML = "";
+
+  renderReviewReportContent(result, issues);
+
+  const improvementItems = Array.isArray(result.overall_improvements) ? result.overall_improvements : [];
+  improvements.hidden = !improvementItems.length;
+  improvements.innerHTML = improvementItems.length
+    ? `<strong>Overall improvements</strong><ul>${improvementItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
     : "";
 }
 
-async function streamFullReview(payload) {
-  prepareFullReviewStream();
+function prepareFullReviewStream() {
+  const panel = elements.fullReviewInlineResults;
 
+  hideLoader();
+  resetResults();
+  state.fullReviewIssues = [];
+  state.fullReviewCards = new Map();
+
+  if (!panel) {
+    showResultsPage();
+    elements.summary.hidden = false;
+    elements.summary.textContent = "Starting full review...";
+    return {
+      summary: elements.summary,
+      issues: elements.issues,
+      improvements: elements.improvements,
+    };
+  }
+
+  const summary = panel.querySelector("[data-inline-summary]");
+  const issues = panel.querySelector("[data-inline-issues]");
+  const improvements = panel.querySelector("[data-inline-improvements]");
+
+  panel.hidden = false;
+  summary.hidden = false;
+  summary.textContent = "Starting full review...";
+  issues.innerHTML = "";
+  improvements.hidden = true;
+  improvements.innerHTML = "";
+  updateIssueStats([]);
+
+  return { summary, issues, improvements };
+}
+
+function ensureFileDefectsSection(targetIssues) {
+  if (targetIssues.querySelector("[data-file-defects-section]")) return;
+
+  const section = createReportSection("Each File Defects And Suggestions", "");
+  section.dataset.fileDefectsSection = "true";
+  targetIssues.appendChild(section);
+}
+
+function handleFullReviewStreamEvent(event, streamUi) {
+  if (event.type === "status") {
+    streamUi.summary.textContent = event.message || "Full review is running...";
+    return null;
+  }
+
+  if (event.type === "section" && event.name === "tech_stack") {
+    renderTechStackSection(event.data, streamUi.issues);
+    return null;
+  }
+
+  if (event.type === "section" && event.name === "developed_modules") {
+    renderDevelopedModulesSection(event.data, streamUi.issues);
+    return null;
+  }
+
+  if (event.type === "issue" && event.issue) {
+    ensureFileDefectsSection(streamUi.issues);
+    state.fullReviewIssues.push(event.issue);
+    updateIssueStats(state.fullReviewIssues);
+    streamUi.issues.appendChild(createIssueCard(event.issue));
+    streamUi.summary.textContent = `Reviewed ${event.reviewed_files || 0}/${event.total_files || "--"} files. Found ${event.total_issues || state.fullReviewIssues.length} issue(s).`;
+    return null;
+  }
+
+  if (event.type === "file_done") {
+    streamUi.summary.textContent = `Reviewed ${event.reviewed_files || 0}/${event.total_files || "--"} files. Found ${event.total_issues || state.fullReviewIssues.length} issue(s).`;
+    return null;
+  }
+
+  if (event.type === "done") {
+    const result = event.result || {};
+    streamUi.summary.textContent = result.summary || "Full review complete.";
+
+    if (!state.fullReviewIssues.length) {
+      ensureFileDefectsSection(streamUi.issues);
+      streamUi.issues.appendChild(createReportSection(
+        "No File Defects Found",
+        '<div class="empty-state"><strong>No issues returned</strong><span>The analysis did not report structured findings.</span></div>'
+      ));
+    }
+
+    renderModuleProblemsSection(result.module_problems, streamUi.issues);
+    renderSeverityVulnerabilitySection(result.severity_vulnerability, streamUi.issues);
+
+    const improvementItems = Array.isArray(result.overall_improvements) ? result.overall_improvements : [];
+    streamUi.improvements.hidden = !improvementItems.length;
+    streamUi.improvements.innerHTML = improvementItems.length
+      ? `<strong>Overall improvements</strong><ul>${improvementItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : "";
+
+    updateIssueStats(Array.isArray(result.issues) ? result.issues : state.fullReviewIssues);
+    return result;
+  }
+
+  return null;
+}
+
+async function streamFullReview(payload) {
+  const streamUi = prepareFullReviewStream();
   const response = await fetch("/ai/full-review", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -383,51 +736,34 @@ async function streamFullReview(payload) {
 
     for (const line of lines) {
       if (!line.trim()) continue;
-
       const event = JSON.parse(line);
-
-      if (event.type === "status") {
-        elements.summary.textContent = event.message || "Full review is running...";
-      }
-
-      if (event.type === "file_start") {
-        elements.summary.textContent = `Reviewing ${event.file_path || "file"} (${event.reviewed_files || 0}/${event.total_files || 0})`;
-        createLiveReviewCard(event.file_path, event.language);
-      }
-
-      if (event.type === "token") {
-        appendLiveReviewToken(event.file_path, event.token || "");
-      }
-
-      if (event.type === "issue" && event.issue) {
-        appendFullReviewIssue(event.issue);
-      }
-
-      if (event.type === "file_complete") {
-        finishLiveReviewCard(event.file_path, event.issue_count || 0);
-        elements.summary.textContent = `Reviewed ${event.reviewed_files || 0} of ${event.total_files || 0} files. Findings: ${event.total_issues || 0}.`;
-      }
-
-      if (event.type === "complete") {
-        finalResult = {
-          summary: event.summary || "Full review complete.",
-          issues: [...state.fullReviewIssues],
-          overall_improvements: event.overall_improvements || [],
-        };
-        elements.summary.textContent = finalResult.summary;
-      }
+      finalResult = handleFullReviewStreamEvent(event, streamUi) || finalResult;
     }
   }
 
-  if (!state.fullReviewIssues.length && !state.fullReviewCards.size) {
-    elements.issues.innerHTML = '<div class="empty-state"><strong>No issues returned</strong><span>The analysis did not report structured findings.</span></div>';
+  if (buffer.trim()) {
+    const event = JSON.parse(buffer);
+    finalResult = handleFullReviewStreamEvent(event, streamUi) || finalResult;
   }
 
-  return finalResult || {
-    summary: elements.summary.textContent,
-    issues: [...state.fullReviewIssues],
-    overall_improvements: [],
-  };
+  return finalResult || { summary: "Full review stream completed." };
+}
+
+function renderReviewResults(result) {
+  resetResults();
+  showResultsPage();
+  elements.summary.hidden = !result.summary;
+  elements.summary.textContent = result.summary || "";
+
+  const issues = Array.isArray(result.issues) ? result.issues : [];
+  updateIssueStats(issues);
+  renderReviewReportContent(result, elements.issues);
+
+  const improvements = Array.isArray(result.overall_improvements) ? result.overall_improvements : [];
+  elements.improvements.hidden = !improvements.length;
+  elements.improvements.innerHTML = improvements.length
+    ? `<strong>Overall improvements</strong><ul>${improvements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
 }
 
 function renderAskResults(result) {
@@ -539,6 +875,7 @@ elements.indexForm.addEventListener("submit", async (event) => {
       <span>Files: ${escapeHtml(result.files_loaded ?? "--")}</span>
       <span>Chunks: ${escapeHtml(result.chunks_created ?? "--")}</span>
       <span>${result.cached ? "Cached" : "Fresh"}</span>
+      ${result.file_filter ? `<span>Skipped: ${escapeHtml((result.file_filter.ignored || 0) + (result.file_filter.style_skipped || 0) + (result.file_filter.unsupported || 0) + (result.file_filter.too_large || 0))}</span>` : ""}
     `;
     showToast("Repository indexed", result.message || result.repo_id, "success");
     stopLoader("Index ready");
@@ -559,12 +896,15 @@ elements.zipForm.addEventListener("submit", async (event) => {
     const formData = new FormData();
     formData.append("file", elements.zipFile.files[0]);
     const result = await postForm("/ai/index-zip", formData);
-    setActiveRepo(result.repo_id);
-    elements.zipMeta.innerHTML = `
-      <span>Files: ${escapeHtml(result.files_loaded ?? "--")}</span>
-      <span>Chunks: ${escapeHtml(result.chunks_created ?? "--")}</span>
-      <span>${result.cached ? "Cached" : "Fresh"}</span>
-    `;
+
+    if (result.multiple) {
+      renderZipProjectChoices(result);
+      showToast("Multiple projects found", "Choose which ZIP project to index first.", "info");
+      stopLoader("Choose a ZIP project");
+      return;
+    }
+
+    renderZipIndexResult(result);
     showToast("ZIP indexed", result.message || result.repo_id, "success");
     stopLoader("ZIP index ready");
   } catch (error) {
@@ -612,21 +952,18 @@ elements.fullReviewForm.addEventListener("submit", async (event) => {
   elements.fullReviewButton.disabled = true;
   elements.fullReviewButton.classList.remove("is-loading");
   elements.fullReviewButton.innerHTML = '<span class="button-icon">></span> Streaming';
+  hideLoader();
 
   try {
     const result = await streamFullReview({
       repo_id: state.repoId,
       question: elements.fullQuestion.value.trim(),
     });
-    const improvements = Array.isArray(result.overall_improvements) ? result.overall_improvements : [];
-    elements.improvements.hidden = !improvements.length;
-    elements.improvements.innerHTML = improvements.length
-      ? `<strong>Overall improvements</strong><ul>${improvements.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-      : "";
     showToast("Full review complete", result.summary || "Structured findings are ready.", "success");
   } catch (error) {
     showToast("Full review failed", error.message, "error");
   } finally {
+    hideLoader();
     elements.fullReviewButton.disabled = false;
     elements.fullReviewButton.classList.remove("is-loading");
     elements.fullReviewButton.innerHTML = '<span class="button-icon">></span> Run';
