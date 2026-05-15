@@ -492,6 +492,9 @@ function renderTechStackSection(techStack, target = elements.issues) {
 }
 
 function renderModuleProblemsSection(moduleProblems, target = elements.issues) {
+  const existing = target.querySelector("[data-module-problems-section]");
+  if (existing) existing.remove();
+
   if (!Array.isArray(moduleProblems) || !moduleProblems.length) return;
 
   const body = `
@@ -512,7 +515,59 @@ function renderModuleProblemsSection(moduleProblems, target = elements.issues) {
       `).join("")}
     </div>
   `;
-  target.appendChild(createReportSection("Module By Module Major Problems", body));
+  const section = createReportSection("Module By Module Major Problems", body);
+  section.dataset.moduleProblemsSection = "true";
+
+  const fileDefectsSection = target.querySelector("[data-file-defects-section]");
+  if (fileDefectsSection) {
+    target.insertBefore(section, fileDefectsSection);
+    return;
+  }
+
+  target.appendChild(section);
+}
+
+function moduleNameFromFilePath(filePath) {
+  const parts = String(filePath || "").split("/").filter(Boolean);
+  return parts.length > 1 ? parts[0] : "root";
+}
+
+function buildModuleProblemsFromIssues(issues) {
+  if (!Array.isArray(issues) || !issues.length) return [];
+
+  const modules = new Map();
+
+  issues.forEach((issue) => {
+    const moduleName = issue.module || moduleNameFromFilePath(issue.file_path || "");
+    const current = modules.get(moduleName) || {
+      module: moduleName,
+      issue_count: 0,
+      high: 0,
+      medium: 0,
+      files: new Set(),
+      major_problem: "",
+    };
+
+    current.issue_count += 1;
+    if (issue.file_path) current.files.add(issue.file_path);
+
+    const severity = String(issue.severity || "").toLowerCase();
+    if (severity === "high") current.high += 1;
+    if (severity === "medium") current.medium += 1;
+
+    modules.set(moduleName, current);
+  });
+
+  return Array.from(modules.values())
+    .map((item) => {
+      const files = Array.from(item.files).sort();
+      return {
+        ...item,
+        files,
+        major_problem: `${item.module} has ${item.issue_count} confirmed issue(s) across ${files.length} file(s).`,
+      };
+    })
+    .sort((a, b) => (b.high - a.high) || (b.medium - a.medium) || a.module.localeCompare(b.module));
 }
 
 function renderDevelopedModulesSection(modules, target = elements.issues) {
@@ -670,6 +725,7 @@ function handleFullReviewStreamEvent(event, streamUi) {
     ensureFileDefectsSection(streamUi.issues);
     state.fullReviewIssues.push(event.issue);
     updateIssueStats(state.fullReviewIssues);
+    renderModuleProblemsSection(buildModuleProblemsFromIssues(state.fullReviewIssues), streamUi.issues);
     streamUi.issues.appendChild(createIssueCard(event.issue));
     streamUi.summary.textContent = `Reviewed ${event.reviewed_files || 0}/${event.total_files || "--"} files. Found ${event.total_issues || state.fullReviewIssues.length} issue(s).`;
     return null;
